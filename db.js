@@ -27,6 +27,8 @@ async function initDb() {
 
     CREATE INDEX IF NOT EXISTS messages_phone_session_idx
       ON messages (phone, session_id, created_at);
+
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS address TEXT;
   `);
   console.log("[DB] Tablas listas");
 }

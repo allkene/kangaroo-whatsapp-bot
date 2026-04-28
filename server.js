@@ -20,6 +20,18 @@ const {
 // CAPA DE DATOS — PostgreSQL
 // ──────────────────────────────────────────────
 
+function extractAddress(content) {
+  const patterns = [
+    /(?:calle|avenida|av\.?|sector|ctra\.?|carretera)\s+[\w\s,#.-]{3,80}/i,
+    /(?:La Romana|Bayahibe)[^.!?]{0,80}/i,
+  ];
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    if (match) return match[0].trim().replace(/\s+/g, " ").slice(0, 200);
+  }
+  return null;
+}
+
 function extractCustomerName(messages) {
   const patterns = [
     /me llamo\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)/i,
@@ -82,14 +94,16 @@ async function appendMessage(phone, role, content, manual = false) {
   );
 
   if (role === "user") {
-    const name = extractCustomerName([{ role: "user", content }]);
+    const name    = extractCustomerName([{ role: "user", content }]);
+    const address = extractAddress(content);
     await pool.query(
       `UPDATE conversations
        SET last_activity     = NOW(),
            last_user_message = $1,
-           customer_name     = COALESCE(customer_name, $2)
-       WHERE phone = $3`,
-      [content, name, phone]
+           customer_name     = COALESCE(customer_name, $2),
+           address           = COALESCE(address, $3)
+       WHERE phone = $4`,
+      [content, name, address, phone]
     );
   } else {
     const isClosing = content.includes("técnico de Kangaroo Multiservice te contactará pronto");
@@ -395,6 +409,46 @@ app.get("/api/conversations", async (req, res) => {
     res.json({ total: conversations.length, conversations });
   } catch (err) {
     console.error("[API /api/conversations]", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ──────────────────────────────────────────────
+// CLIENTES — GET /clientes
+// ──────────────────────────────────────────────
+app.get("/clientes", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "clientes.html"));
+});
+
+// ──────────────────────────────────────────────
+// API — GET /api/clientes
+// ──────────────────────────────────────────────
+app.get("/api/clientes", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         c.phone,
+         c.customer_name                                AS "customerName",
+         c.address,
+         c.last_user_message                            AS "lastUserMessage",
+         EXTRACT(EPOCH FROM c.first_message_at) * 1000  AS "firstMessageAt",
+         COUNT(DISTINCT m.session_id)                   AS "totalSessions"
+       FROM conversations c
+       LEFT JOIN messages m ON m.phone = c.phone
+       GROUP BY c.phone, c.customer_name, c.address,
+                c.last_user_message, c.first_message_at
+       ORDER BY c.first_message_at DESC`
+    );
+    res.json({
+      total: rows.length,
+      clientes: rows.map((r) => ({
+        ...r,
+        firstMessageAt: Number(r.firstMessageAt),
+        totalSessions:  Number(r.totalSessions),
+      })),
+    });
+  } catch (err) {
+    console.error("[API /api/clientes]", err);
     res.status(500).json({ error: err.message });
   }
 });
