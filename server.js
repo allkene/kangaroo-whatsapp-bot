@@ -40,17 +40,24 @@ function extractCustomerName(messages) {
     /^([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?),?\s+(?:quisiera|necesito|quiero)/i,
   ];
   const bareNamePattern = /^([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)$/i;
+  const blacklist = new Set([
+    "hola", "buenas", "buenos", "si", "sí", "no", "ok", "okay",
+    "gracias", "ayuda", "necesito", "quiero", "quisiera", "hei", "hey",
+    "dias", "días", "tardes", "noches", "buen", "bueno",
+  ]);
+
+  const isBlacklisted = (name) => blacklist.has(name.toLowerCase().trim());
 
   for (const msg of messages) {
     if (msg.role !== "user") continue;
     for (const pattern of patterns) {
       const match = msg.content.match(pattern);
-      if (match) return match[1].trim();
+      if (match && !isBlacklisted(match[1])) return match[1].trim();
     }
     // Solo aplicar el patrón de nombre suelto si el mensaje tiene 4 palabras o menos
     if (msg.content.trim().split(/\s+/).length <= 4) {
       const match = msg.content.trim().match(bareNamePattern);
-      if (match) return match[1].trim();
+      if (match && !isBlacklisted(match[1])) return match[1].trim();
     }
   }
   return null;
@@ -425,6 +432,27 @@ app.get("/sessions", async (req, res) => {
         lastActivity: r.last_activity,
       })),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ──────────────────────────────────────────────
+// FIX-DATA — GET /fix-data  (corrección puntual de datos)
+// ──────────────────────────────────────────────
+app.get("/fix-data", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE conversations
+       SET customer_name = 'Adonis López',
+           address       = 'Calle Primera Ensanche La Hoz número 69, La Romana'
+       WHERE phone = '18098521863'
+       RETURNING phone, customer_name, address`
+    );
+    if (result.rowCount === 0) {
+      return res.json({ ok: false, message: "No se encontró el teléfono 18098521863" });
+    }
+    res.json({ ok: true, updated: result.rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
