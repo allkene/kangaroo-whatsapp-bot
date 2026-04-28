@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const path = require("path");
+const { pool, initDb } = require("./db");
 
 const app = express();
 app.use(express.json());
@@ -16,22 +17,8 @@ const {
 } = process.env;
 
 // ──────────────────────────────────────────────
-// MEMORIA DE CONVERSACIÓN POR USUARIO
-// Clave: número de teléfono | Valor: { messages: [], lastActivity: timestamp }
-// Se limpia automáticamente tras 24h de inactividad
+// CAPA DE DATOS — PostgreSQL
 // ──────────────────────────────────────────────
-const conversations = new Map();
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas
-
-function getHistory(phone) {
-  const session = conversations.get(phone);
-  if (!session) return [];
-  if (Date.now() - session.lastActivity > SESSION_TTL_MS) {
-    conversations.delete(phone);
-    return [];
-  }
-  return session.messages;
-}
 
 function extractCustomerName(messages) {
   const patterns = [
@@ -50,29 +37,79 @@ function extractCustomerName(messages) {
   return null;
 }
 
-function saveHistory(phone, messages) {
-  const existing = conversations.get(phone);
-  const firstMessageAt = existing?.firstMessageAt ?? Date.now();
-  const customerName = extractCustomerName(messages) ?? existing?.customerName ?? null;
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-  const lastBotMsg  = [...messages].reverse().find((m) => m.role === "assistant");
-  const completed = messages.some((m) =>
-    m.role === "assistant" && m.content?.includes("técnico de Kangaroo Multiservice te contactará pronto")
+// Returns messages for the current active session (respects 24h TTL for bot context)
+async function getHistory(phone) {
+  const { rows } = await pool.query(
+    `SELECT m.role, m.content, m.manual
+     FROM messages m
+     JOIN conversations c ON c.phone = m.phone AND c.session_id = m.session_id
+     WHERE m.phone = $1
+       AND c.last_activity > NOW() - INTERVAL '24 hours'
+     ORDER BY m.created_at`,
+    [phone]
   );
-
-  conversations.set(phone, {
-    messages,
-    lastActivity: Date.now(),
-    firstMessageAt,
-    customerName,
-    lastUserMessage: lastUserMsg?.content ?? null,
-    lastBotMessage:  lastBotMsg?.content  ?? null,
-    completed,
-  });
+  return rows;
 }
 
-function clearHistory(phone) {
-  conversations.delete(phone);
+// Appends one message and updates conversation metadata.
+// Auto-resets the session if the phone has been inactive for more than 24h.
+async function appendMessage(phone, role, content, manual = false) {
+  const { rows: [conv] } = await pool.query(
+    `INSERT INTO conversations (phone)
+     VALUES ($1)
+     ON CONFLICT (phone) DO UPDATE SET
+       session_id       = CASE WHEN conversations.last_activity < NOW() - INTERVAL '24 hours'
+                               THEN gen_random_uuid() ELSE conversations.session_id END,
+       first_message_at = CASE WHEN conversations.last_activity < NOW() - INTERVAL '24 hours'
+                               THEN NOW() ELSE conversations.first_message_at END,
+       completed        = CASE WHEN conversations.last_activity < NOW() - INTERVAL '24 hours'
+                               THEN false ELSE conversations.completed END
+     RETURNING session_id`,
+    [phone]
+  );
+
+  await pool.query(
+    `INSERT INTO messages (phone, session_id, role, content, manual)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [phone, conv.session_id, role, content, manual]
+  );
+
+  if (role === "user") {
+    const name = extractCustomerName([{ role: "user", content }]);
+    await pool.query(
+      `UPDATE conversations
+       SET last_activity     = NOW(),
+           last_user_message = $1,
+           customer_name     = COALESCE(customer_name, $2)
+       WHERE phone = $3`,
+      [content, name, phone]
+    );
+  } else {
+    const isClosing = content.includes("técnico de Kangaroo Multiservice te contactará pronto");
+    await pool.query(
+      `UPDATE conversations
+       SET last_activity    = NOW(),
+           last_bot_message = $1,
+           completed        = completed OR $2
+       WHERE phone = $3`,
+      [content, isClosing, phone]
+    );
+  }
+}
+
+// Starts a fresh session for the phone while preserving historical messages in the DB.
+async function resetSession(phone) {
+  await pool.query(
+    `UPDATE conversations
+     SET session_id        = gen_random_uuid(),
+         completed         = false,
+         first_message_at  = NOW(),
+         last_user_message = NULL,
+         last_bot_message  = NULL
+     WHERE phone = $1`,
+    [phone]
+  );
+  console.log(`[Session] Sesión reiniciada para ${phone}`);
 }
 
 const SYSTEM_PROMPT = `Eres el Asistente Virtual de Kangaroo Multiservice, empresa de servicios del hogar en La Romana y Bayahibe, República Dominicana.
@@ -163,10 +200,8 @@ app.post("/webhook", async (req, res) => {
 // 3. LLAMAR A GROQ CON HISTORIAL DE CONVERSACIÓN
 // ──────────────────────────────────────────────
 async function askGroq(phone, userMessage) {
-  const history = getHistory(phone);
-
-  // Agrega el nuevo mensaje del usuario al historial
-  const updatedHistory = [...history, { role: "user", content: userMessage }];
+  const history = await getHistory(phone);
+  await appendMessage(phone, "user", userMessage);
 
   try {
     const response = await axios.post(
@@ -176,7 +211,8 @@ async function askGroq(phone, userMessage) {
         max_tokens: 1024,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          ...updatedHistory,
+          ...history.map((m) => ({ role: m.role, content: m.content })),
+          { role: "user", content: userMessage },
         ],
       },
       {
@@ -188,17 +224,10 @@ async function askGroq(phone, userMessage) {
     );
 
     const assistantReply = response.data.choices[0].message.content;
+    await appendMessage(phone, "assistant", assistantReply);
 
-    // Guarda historial completo (usuario + respuesta del asistente)
-    saveHistory(phone, [
-      ...updatedHistory,
-      { role: "assistant", content: assistantReply },
-    ]);
-
-    // Si la respuesta contiene el cierre, limpia la sesión después de 5 min
-    // para que el técnico pueda reabrir una nueva conversación si es necesario
     if (assistantReply.includes("técnico de Kangaroo Multiservice te contactará pronto")) {
-      setTimeout(() => clearHistory(phone), 5 * 60 * 1000);
+      setTimeout(() => resetSession(phone), 5 * 60 * 1000);
     }
 
     return assistantReply;
@@ -278,16 +307,27 @@ app.get("/test", async (req, res) => {
 });
 
 // DEBUG — ver sesiones activas: GET /sessions
-app.get("/sessions", (req, res) => {
-  const active = [];
-  for (const [phone, session] of conversations.entries()) {
-    active.push({
-      phone,
-      turns: session.messages.length,
-      lastActivity: new Date(session.lastActivity).toISOString(),
+app.get("/sessions", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT c.phone, COUNT(m.id) AS turns, c.last_activity
+       FROM conversations c
+       LEFT JOIN messages m ON m.phone = c.phone AND m.session_id = c.session_id
+       WHERE c.last_activity > NOW() - INTERVAL '24 hours'
+       GROUP BY c.phone, c.last_activity
+       ORDER BY c.last_activity DESC`
+    );
+    res.json({
+      activeSessions: rows.length,
+      sessions: rows.map((r) => ({
+        phone: r.phone,
+        turns: Number(r.turns),
+        lastActivity: r.last_activity,
+      })),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-  res.json({ activeSessions: active.length, sessions: active });
 });
 
 // ──────────────────────────────────────────────
@@ -300,27 +340,45 @@ app.get("/dashboard", (req, res) => {
 // ──────────────────────────────────────────────
 // API — GET /api/conversations
 // ──────────────────────────────────────────────
-app.get("/api/conversations", (req, res) => {
-  const result = [];
-  for (const [phone, session] of conversations.entries()) {
-    if (Date.now() - session.lastActivity > SESSION_TTL_MS) {
-      conversations.delete(phone);
-      continue;
-    }
-    result.push({
-      phone,
-      customerName: session.customerName,
-      lastUserMessage: session.lastUserMessage,
-      lastBotMessage:  session.lastBotMessage,
-      lastActivity: session.lastActivity,
-      firstMessageAt: session.firstMessageAt,
-      turns: Math.floor(session.messages.length / 2),
-      status: session.completed ? "completed" : "active",
-      messages: session.messages.map((m) => ({ role: m.role, content: m.content, manual: !!m.manual })),
-    });
+app.get("/api/conversations", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         c.phone,
+         c.customer_name                                AS "customerName",
+         c.last_user_message                            AS "lastUserMessage",
+         c.last_bot_message                             AS "lastBotMessage",
+         EXTRACT(EPOCH FROM c.last_activity)    * 1000  AS "lastActivity",
+         EXTRACT(EPOCH FROM c.first_message_at) * 1000  AS "firstMessageAt",
+         c.completed,
+         COALESCE(
+           json_agg(
+             json_build_object('role', m.role, 'content', m.content, 'manual', m.manual)
+             ORDER BY m.created_at
+           ) FILTER (WHERE m.id IS NOT NULL),
+           '[]'
+         ) AS messages
+       FROM conversations c
+       LEFT JOIN messages m ON m.phone = c.phone AND m.session_id = c.session_id
+       WHERE c.last_activity > NOW() - INTERVAL '7 days'
+       GROUP BY c.phone, c.customer_name, c.last_user_message, c.last_bot_message,
+                c.last_activity, c.first_message_at, c.completed
+       ORDER BY c.last_activity DESC`
+    );
+
+    const conversations = rows.map((r) => ({
+      ...r,
+      lastActivity:   Number(r.lastActivity),
+      firstMessageAt: Number(r.firstMessageAt),
+      turns: (r.messages || []).filter((m) => m.role === "user").length,
+      status: r.completed ? "completed" : "active",
+    }));
+
+    res.json({ total: conversations.length, conversations });
+  } catch (err) {
+    console.error("[API /api/conversations]", err);
+    res.status(500).json({ error: err.message });
   }
-  result.sort((a, b) => b.lastActivity - a.lastActivity);
-  res.json({ total: result.length, conversations: result });
 });
 
 // ──────────────────────────────────────────────
@@ -333,8 +391,7 @@ app.post("/api/send", async (req, res) => {
   }
   try {
     await sendWhatsAppMessage(phone, message.trim());
-    const history = getHistory(phone);
-    saveHistory(phone, [...history, { role: "assistant", content: message.trim(), manual: true }]);
+    await appendMessage(phone, "assistant", message.trim(), true);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.response?.data ?? err.message });
@@ -344,8 +401,16 @@ app.post("/api/send", async (req, res) => {
 // ──────────────────────────────────────────────
 // ARRANCAR SERVIDOR
 // ──────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`[Servidor] WhatsApp bot escuchando en puerto ${PORT}`);
-  console.log(`[Config]   Phone Number ID: ${PHONE_NUMBER_ID}`);
-  console.log(`[Config]   Verify Token:    ${VERIFY_TOKEN}`);
+async function start() {
+  await initDb();
+  app.listen(PORT, () => {
+    console.log(`[Servidor] WhatsApp bot escuchando en puerto ${PORT}`);
+    console.log(`[Config]   Phone Number ID: ${PHONE_NUMBER_ID}`);
+    console.log(`[Config]   Verify Token:    ${VERIFY_TOKEN}`);
+  });
+}
+
+start().catch((err) => {
+  console.error("[Fatal] No se pudo iniciar el servidor:", err.message);
+  process.exit(1);
 });
