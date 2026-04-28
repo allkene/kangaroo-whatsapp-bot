@@ -27,10 +27,17 @@ function extractCustomerName(messages) {
     /soy\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)/i,
     /^([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?),?\s+(?:quisiera|necesito|quiero)/i,
   ];
+  const bareNamePattern = /^([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)$/i;
+
   for (const msg of messages) {
     if (msg.role !== "user") continue;
     for (const pattern of patterns) {
       const match = msg.content.match(pattern);
+      if (match) return match[1].trim();
+    }
+    // Solo aplicar el patrón de nombre suelto si el mensaje tiene 4 palabras o menos
+    if (msg.content.trim().split(/\s+/).length <= 4) {
+      const match = msg.content.trim().match(bareNamePattern);
       if (match) return match[1].trim();
     }
   }
@@ -201,6 +208,17 @@ app.post("/webhook", async (req, res) => {
 // ──────────────────────────────────────────────
 async function askGroq(phone, userMessage) {
   const history = await getHistory(phone);
+
+  const { rows: [convData] } = await pool.query(
+    `SELECT customer_name FROM conversations WHERE phone = $1`,
+    [phone]
+  );
+  const savedName = convData?.customer_name;
+
+  const systemPrompt = savedName
+    ? `${SYSTEM_PROMPT}\n\nIMPORTANTE: Ya conoces a este cliente. Su nombre es ${savedName}. Salúdalo por su nombre desde el inicio y NO vuelvas a pedírselo.`
+    : SYSTEM_PROMPT;
+
   await appendMessage(phone, "user", userMessage);
 
   try {
@@ -210,7 +228,7 @@ async function askGroq(phone, userMessage) {
         model: "llama-3.1-8b-instant",
         max_tokens: 1024,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           ...history.map((m) => ({ role: m.role, content: m.content })),
           { role: "user", content: userMessage },
         ],
