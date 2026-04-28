@@ -1,9 +1,11 @@
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
+const path = require("path");
 
 const app = express();
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
 const {
   META_ACCESS_TOKEN,
@@ -24,7 +26,6 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas
 function getHistory(phone) {
   const session = conversations.get(phone);
   if (!session) return [];
-  // Si pasaron más de 24h, sesión expirada
   if (Date.now() - session.lastActivity > SESSION_TTL_MS) {
     conversations.delete(phone);
     return [];
@@ -32,8 +33,42 @@ function getHistory(phone) {
   return session.messages;
 }
 
+function extractCustomerName(messages) {
+  const patterns = [
+    /me llamo\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)/i,
+    /mi nombre es\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)/i,
+    /soy\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?)/i,
+    /^([A-Za-záéíóúÁÉÍÓÚñÑ]+(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑ]+)?),?\s+(?:quisiera|necesito|quiero)/i,
+  ];
+  for (const msg of messages) {
+    if (msg.role !== "user") continue;
+    for (const pattern of patterns) {
+      const match = msg.content.match(pattern);
+      if (match) return match[1].trim();
+    }
+  }
+  return null;
+}
+
 function saveHistory(phone, messages) {
-  conversations.set(phone, { messages, lastActivity: Date.now() });
+  const existing = conversations.get(phone);
+  const firstMessageAt = existing?.firstMessageAt ?? Date.now();
+  const customerName = extractCustomerName(messages) ?? existing?.customerName ?? null;
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+  const lastBotMsg  = [...messages].reverse().find((m) => m.role === "assistant");
+  const completed = messages.some((m) =>
+    m.role === "assistant" && m.content?.includes("técnico de Kangaroo Multiservice te contactará pronto")
+  );
+
+  conversations.set(phone, {
+    messages,
+    lastActivity: Date.now(),
+    firstMessageAt,
+    customerName,
+    lastUserMessage: lastUserMsg?.content ?? null,
+    lastBotMessage:  lastBotMsg?.content  ?? null,
+    completed,
+  });
 }
 
 function clearHistory(phone) {
@@ -253,6 +288,39 @@ app.get("/sessions", (req, res) => {
     });
   }
   res.json({ activeSessions: active.length, sessions: active });
+});
+
+// ──────────────────────────────────────────────
+// DASHBOARD — GET /dashboard
+// ──────────────────────────────────────────────
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
+
+// ──────────────────────────────────────────────
+// API — GET /api/conversations
+// ──────────────────────────────────────────────
+app.get("/api/conversations", (req, res) => {
+  const result = [];
+  for (const [phone, session] of conversations.entries()) {
+    if (Date.now() - session.lastActivity > SESSION_TTL_MS) {
+      conversations.delete(phone);
+      continue;
+    }
+    result.push({
+      phone,
+      customerName: session.customerName,
+      lastUserMessage: session.lastUserMessage,
+      lastBotMessage:  session.lastBotMessage,
+      lastActivity: session.lastActivity,
+      firstMessageAt: session.firstMessageAt,
+      turns: Math.floor(session.messages.length / 2),
+      status: session.completed ? "completed" : "active",
+      messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+    });
+  }
+  result.sort((a, b) => b.lastActivity - a.lastActivity);
+  res.json({ total: result.length, conversations: result });
 });
 
 // ──────────────────────────────────────────────

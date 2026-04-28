@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kangaroo Multiservice — Monitor WhatsApp</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --orange:      #FF6600;
+      --orange-dark: #CC5200;
+      --orange-light: #FF8533;
+      --orange-bg:   #FFF4EE;
+      --bg:          #F5F5F5;
+      --surface:     #FFFFFF;
+      --border:      #E8E0D8;
+      --text:        #1A1A1A;
+      --text-muted:  #6B6B6B;
+      --green:       #22C55E;
+      --radius:      12px;
+      --shadow:      0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--orange);
+      padding: 0 24px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 12px rgba(204,82,0,0.3);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #fff;
+    }
+
+    .logo-icon {
+      font-size: 32px;
+      line-height: 1;
+    }
+
+    .logo-text h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+    }
+
+    .logo-text p {
+      font-size: 12px;
+      opacity: 0.85;
+      font-weight: 400;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .live-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 20px;
+      padding: 4px 12px;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #fff;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    .last-refresh {
+      color: rgba(255,255,255,0.8);
+      font-size: 12px;
+    }
+
+    /* ── Main layout ── */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 20px;
+    }
+
+    /* ── Stats bar ── */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      box-shadow: var(--shadow);
+      border-left: 4px solid var(--border);
+      transition: transform 0.15s;
+    }
+
+    .stat-card:first-child { border-left-color: var(--orange); }
+    .stat-card:nth-child(2) { border-left-color: var(--green); }
+    .stat-card:nth-child(3) { border-left-color: #6366F1; }
+
+    .stat-card:hover { transform: translateY(-2px); }
+
+    .stat-number {
+      display: block;
+      font-size: 36px;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--orange);
+    }
+
+    .stat-card:nth-child(2) .stat-number { color: var(--green); }
+    .stat-card:nth-child(3) .stat-number { color: #6366F1; }
+
+    .stat-label {
+      display: block;
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Toolbar ── */
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+
+    .search-input {
+      flex: 1;
+      padding: 10px 16px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-input:focus { border-color: var(--orange); }
+
+    .filter-select {
+      padding: 10px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+      cursor: pointer;
+    }
+
+    .filter-select:focus { border-color: var(--orange); }
+
+    /* ── Conversations table ── */
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 12px;
+    }
+
+    .conv-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .conv-card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      box-shadow: var(--shadow);
+      border: 1.5px solid transparent;
+      display: grid;
+      grid-template-columns: 48px 1fr auto;
+      gap: 14px;
+      align-items: center;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+
+    .conv-card:hover {
+      border-color: var(--orange);
+      transform: translateY(-1px);
+    }
+
+    .avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--orange-bg);
+      color: var(--orange);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .conv-info { min-width: 0; }
+
+    .conv-name {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .conv-phone {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
+
+    .conv-preview {
+      font-size: 13px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .conv-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .conv-time {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .badge-active {
+      background: #FFF7ED;
+      color: var(--orange);
+      border: 1px solid #FDBA74;
+    }
+
+    .badge-completed {
+      background: #F0FDF4;
+      color: #16A34A;
+      border: 1px solid #86EFAC;
+    }
+
+    .turns-count {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    .empty-state .empty-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    .empty-state p {
+      font-size: 15px;
+    }
+
+    /* ── Modal ── */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 200;
+      backdrop-filter: blur(3px);
+    }
+
+    .modal-backdrop.open { display: flex; align-items: center; justify-content: center; }
+
+    .modal {
+      background: var(--surface);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 620px;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+      margin: 20px;
+    }
+
+    .modal-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--orange-bg);
+      flex-shrink: 0;
+    }
+
+    .modal-header-info h2 {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+
+    .modal-header-info p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 22px;
+      color: var(--text-muted);
+      padding: 4px 8px;
+      border-radius: 6px;
+      line-height: 1;
+      transition: background 0.15s;
+    }
+
+    .modal-close:hover { background: var(--border); }
+
+    .modal-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #F9F0EA;
+    }
+
+    .msg-bubble {
+      max-width: 78%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-wrap: break-word;
+    }
+
+    .msg-bubble.user {
+      align-self: flex-end;
+      background: #fff;
+      border-radius: 14px 14px 4px 14px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    .msg-bubble.assistant {
+      align-self: flex-start;
+      background: var(--orange);
+      color: #fff;
+      border-radius: 14px 14px 14px 4px;
+    }
+
+    .msg-role {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+      opacity: 0.6;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      .stats-bar { grid-template-columns: 1fr; }
+      .conv-card  { grid-template-columns: 40px 1fr auto; }
+      .header .logo-text p { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <span class="logo-icon">🦘</span>
+      <div class="logo-text">
+        <h1>Kangaroo Multiservice</h1>
+        <p>Monitor de WhatsApp Bot</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="live-badge">
+        <div class="live-dot"></div>
+        En vivo
+      </div>
+      <span class="last-refresh" id="last-refresh">—</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Stats -->
+    <div class="stats-bar">
+      <div class="stat-card">
+        <span class="stat-number" id="stat-total">0</span>
+        <span class="stat-label">Total conversaciones</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-active">0</span>
+        <span class="stat-label">Activas</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-completed">0</span>
+        <span class="stat-label">Completadas</span>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <input class="search-input" id="search" type="text" placeholder="🔍  Buscar por nombre o teléfono…" />
+      <select class="filter-select" id="filter">
+        <option value="">Todas</option>
+        <option value="active">Activas</option>
+        <option value="completed">Completadas</option>
+      </select>
+    </div>
+
+    <p class="section-title" id="section-label">Cargando…</p>
+
+    <div class="conv-list" id="conv-list"></div>
+  </main>
+
+  <!-- Modal -->
+  <div class="modal-backdrop" id="modal-backdrop" onclick="closeModal(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-header-info">
+          <h2 id="modal-name">Cliente</h2>
+          <p id="modal-phone"></p>
+        </div>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-messages" id="modal-messages"></div>
+    </div>
+  </div>
+
+  <script>
+    let allConversations = [];
+
+    function relativeTime(ts) {
+      const diff = Date.now() - ts;
+      const m = Math.floor(diff / 60000);
+      if (m < 1)  return "Ahora mismo";
+      if (m < 60) return `Hace ${m} min`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `Hace ${h}h`;
+      return `Hace ${Math.floor(h / 24)}d`;
+    }
+
+    function initials(name) {
+      if (!name) return "?";
+      return name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+    }
+
+    function truncate(str, n) {
+      if (!str) return "Sin mensajes";
+      return str.length > n ? str.slice(0, n) + "…" : str;
+    }
+
+    function formatPhone(phone) {
+      return "+" + phone;
+    }
+
+    function renderList() {
+      const search  = document.getElementById("search").value.toLowerCase();
+      const filter  = document.getElementById("filter").value;
+      const list    = document.getElementById("conv-list");
+      const label   = document.getElementById("section-label");
+
+      let filtered = allConversations.filter(c => {
+        const nameMatch  = (c.customerName || "").toLowerCase().includes(search);
+        const phoneMatch = c.phone.includes(search);
+        const statusMatch = !filter || c.status === filter;
+        return (nameMatch || phoneMatch) && statusMatch;
+      });
+
+      label.textContent = filtered.length === 1
+        ? "1 conversación"
+        : `${filtered.length} conversaciones`;
+
+      if (filtered.length === 0) {
+        list.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">💬</div>
+            <p>No hay conversaciones${search ? " que coincidan con la búsqueda" : " activas en este momento"}.</p>
+          </div>`;
+        return;
+      }
+
+      list.innerHTML = filtered.map(c => {
+        const name    = c.customerName || "Cliente desconocido";
+        const badge   = c.status === "completed"
+          ? '<span class="badge badge-completed">Completada</span>'
+          : '<span class="badge badge-active">Activa</span>';
+        return `
+          <div class="conv-card" onclick="openModal('${c.phone}')">
+            <div class="avatar">${initials(c.customerName)}</div>
+            <div class="conv-info">
+              <div class="conv-name">${escHtml(name)}</div>
+              <div class="conv-phone">${formatPhone(c.phone)}</div>
+              <div class="conv-preview">💬 ${escHtml(truncate(c.lastUserMessage, 70))}</div>
+            </div>
+            <div class="conv-meta">
+              <span class="conv-time">${relativeTime(c.lastActivity)}</span>
+              ${badge}
+              <span class="turns-count">${c.turns} turno${c.turns !== 1 ? "s" : ""}</span>
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    function escHtml(str) {
+      return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+
+    async function fetchData() {
+      try {
+        const res  = await fetch("/api/conversations");
+        const data = await res.json();
+        allConversations = data.conversations || [];
+
+        const active    = allConversations.filter(c => c.status === "active").length;
+        const completed = allConversations.filter(c => c.status === "completed").length;
+
+        document.getElementById("stat-total").textContent     = data.total;
+        document.getElementById("stat-active").textContent    = active;
+        document.getElementById("stat-completed").textContent = completed;
+
+        renderList();
+
+        const now = new Date();
+        document.getElementById("last-refresh").textContent =
+          `Actualizado: ${now.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+      } catch (e) {
+        console.error("Error fetching conversations:", e);
+      }
+    }
+
+    function openModal(phone) {
+      const conv = allConversations.find(c => c.phone === phone);
+      if (!conv) return;
+
+      document.getElementById("modal-name").textContent  = conv.customerName || "Cliente desconocido";
+      document.getElementById("modal-phone").textContent = formatPhone(conv.phone) +
+        (conv.status === "completed" ? "  ✓ Completada" : "  • Activa");
+
+      const msgs = conv.messages || [];
+      document.getElementById("modal-messages").innerHTML = msgs.length === 0
+        ? "<p style='text-align:center;color:#999;padding:20px'>Sin mensajes</p>"
+        : msgs.map(m => `
+            <div class="msg-bubble ${m.role}">
+              <div class="msg-role">${m.role === "user" ? "Cliente" : "Bot"}</div>
+              ${escHtml(m.content)}
+            </div>`).join("");
+
+      const msgBox = document.getElementById("modal-messages");
+      document.getElementById("modal-backdrop").classList.add("open");
+      setTimeout(() => { msgBox.scrollTop = msgBox.scrollHeight; }, 50);
+    }
+
+    function closeModal(event) {
+      if (event && event.target !== document.getElementById("modal-backdrop")) return;
+      document.getElementById("modal-backdrop").classList.remove("open");
+    }
+
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape") document.getElementById("modal-backdrop").classList.remove("open");
+    });
+
+    document.getElementById("search").addEventListener("input",  renderList);
+    document.getElementById("filter").addEventListener("change", renderList);
+
+    fetchData();
+    setInterval(fetchData, 5000);
+  </script>
+
+</body>
+</html>
