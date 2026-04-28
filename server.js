@@ -177,6 +177,41 @@ app.get("/webhook", (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// TRANSCRIPCIÓN DE AUDIO — Groq Whisper
+// ──────────────────────────────────────────────
+async function transcribeAudio(mediaId) {
+  // 1. Obtener URL de descarga desde Meta
+  const { data: mediaInfo } = await axios.get(
+    `https://graph.facebook.com/v21.0/${mediaId}`,
+    { headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` } }
+  );
+
+  // 2. Descargar el audio como buffer
+  const { data: audioBuffer } = await axios.get(mediaInfo.url, {
+    headers:      { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
+    responseType: "arraybuffer",
+  });
+
+  // 3. Enviar a Groq Whisper para transcripción
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([audioBuffer], { type: mediaInfo.mime_type || "audio/ogg" }),
+    "audio.ogg"
+  );
+  form.append("model", "whisper-large-v3-turbo");
+  form.append("language", "es");
+
+  const { data } = await axios.post(
+    "https://api.groq.com/openai/v1/audio/transcriptions",
+    form,
+    { headers: { Authorization: `Bearer ${GROQ_API_KEY}` } }
+  );
+
+  return data.text?.trim() || "";
+}
+
+// ──────────────────────────────────────────────
 // 2. RECIBIR MENSAJES ENTRANTES (POST)
 // ──────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
@@ -199,15 +234,48 @@ app.post("/webhook", async (req, res) => {
     const message = messages[0];
     const from    = message.from;
 
-    if (message.type !== "text") {
-      await sendWhatsAppMessage(from, "Solo puedo procesar mensajes de texto. Por favor escríbeme tu consulta.");
+    await markAsRead(message.id);
+
+    let userText;
+
+    if (message.type === "text") {
+      userText = message.text.body.trim();
+      console.log(`[Texto] De ${from}: "${userText}"`);
+
+    } else if (message.type === "audio") {
+      console.log(`[Audio] De ${from} — transcribiendo...`);
+      try {
+        userText = await transcribeAudio(message.audio.id);
+        console.log(`[Transcripción] ${from}: "${userText}"`);
+        if (!userText) {
+          await sendWhatsAppMessage(from, "No pude entender el audio. Por favor intenta de nuevo o escríbeme tu consulta.");
+          return;
+        }
+      } catch (err) {
+        console.error("[Audio] Error al transcribir:", err.response?.data || err.message);
+        await sendWhatsAppMessage(from, "No pude procesar tu mensaje de audio. Por favor escríbeme tu consulta.");
+        return;
+      }
+
+    } else if (message.type === "location") {
+      const { latitude, longitude } = message.location;
+      console.log(`[Ubicación] De ${from}: ${latitude}, ${longitude}`);
+      await pool.query(
+        `INSERT INTO conversations (phone, address)
+         VALUES ($1, $2)
+         ON CONFLICT (phone) DO UPDATE SET address = EXCLUDED.address`,
+        [from, `${latitude}, ${longitude}`]
+      );
+      userText = `Mi ubicación es: ${latitude}, ${longitude}`;
+
+    } else if (message.type === "image") {
+      await sendWhatsAppMessage(from, "Recibí tu imagen, pero por ahora solo puedo procesar texto, audio y ubicaciones. Por favor descríbeme tu problema en texto.");
+      return;
+
+    } else {
+      await sendWhatsAppMessage(from, "Solo puedo procesar mensajes de texto, audio y ubicaciones. Por favor escríbeme tu consulta.");
       return;
     }
-
-    const userText = message.text.body.trim();
-    console.log(`[Mensaje] De ${from}: "${userText}"`);
-
-    await markAsRead(message.id);
 
     const reply = await askGroq(from, userText);
     await sendWhatsAppMessage(from, reply);
