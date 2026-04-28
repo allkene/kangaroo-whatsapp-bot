@@ -421,6 +421,82 @@
       opacity: 0.6;
     }
 
+    .msg-bubble.manual {
+      background: var(--orange-dark);
+    }
+
+    /* ── Reply bar ── */
+    .modal-reply {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+
+    .reply-textarea {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 20px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      outline: none;
+      max-height: 110px;
+      min-height: 42px;
+      line-height: 1.45;
+      overflow-y: auto;
+      transition: border-color 0.15s;
+    }
+
+    .reply-textarea:focus { border-color: var(--orange); }
+    .reply-textarea:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .reply-send-btn {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: var(--orange);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 19px;
+      flex-shrink: 0;
+      transition: background 0.15s, transform 0.1s;
+    }
+
+    .reply-send-btn:hover  { background: var(--orange-dark); }
+    .reply-send-btn:active { transform: scale(0.92); }
+    .reply-send-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #fff;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+      z-index: 400;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+    }
+
+    .toast.show  { opacity: 1; transform: translateY(0); }
+    .toast.ok    { background: #16A34A; }
+    .toast.error { background: #DC2626; }
+
     /* ── Scrollbar ── */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -496,11 +572,23 @@
         <button class="modal-close" onclick="closeModal()">✕</button>
       </div>
       <div class="modal-messages" id="modal-messages"></div>
+      <div class="modal-reply">
+        <textarea
+          id="reply-input"
+          class="reply-textarea"
+          placeholder="Escribir respuesta manual… (Enter para enviar, Shift+Enter para salto de línea)"
+          rows="1"
+        ></textarea>
+        <button class="reply-send-btn" id="reply-send-btn" title="Enviar mensaje">&#10148;</button>
+      </div>
     </div>
   </div>
 
+  <div class="toast" id="toast"></div>
+
   <script>
     let allConversations = [];
+    let activePhone = null;
 
     function relativeTime(ts) {
       const diff = Date.now() - ts;
@@ -522,60 +610,78 @@
       return str.length > n ? str.slice(0, n) + "…" : str;
     }
 
-    function formatPhone(phone) {
-      return "+" + phone;
+    function formatPhone(phone) { return "+" + phone; }
+
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+        .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+
+    function renderBubble(m) {
+      const isUser   = m.role === "user";
+      const isManual = !isUser && m.manual;
+      const label    = isUser ? "Cliente" : (isManual ? "Agente ✏️" : "Bot");
+      const cls      = isUser ? "user" : (isManual ? "assistant manual" : "assistant");
+      return `<div class="msg-bubble ${cls}">
+        <div class="msg-role">${label}</div>
+        ${escHtml(m.content)}
+      </div>`;
+    }
+
+    function refreshModalMessages() {
+      const conv = allConversations.find(c => c.phone === activePhone);
+      if (!conv) return;
+      const msgBox = document.getElementById("modal-messages");
+      const msgs   = conv.messages || [];
+      const atBottom = msgBox.scrollHeight - msgBox.scrollTop - msgBox.clientHeight < 80;
+      msgBox.innerHTML = msgs.length === 0
+        ? "<p style='text-align:center;color:#999;padding:20px'>Sin mensajes</p>"
+        : msgs.map(renderBubble).join("");
+      if (atBottom) msgBox.scrollTop = msgBox.scrollHeight;
     }
 
     function renderList() {
-      const search  = document.getElementById("search").value.toLowerCase();
-      const filter  = document.getElementById("filter").value;
-      const list    = document.getElementById("conv-list");
-      const label   = document.getElementById("section-label");
+      const search = document.getElementById("search").value.toLowerCase();
+      const filter = document.getElementById("filter").value;
+      const list   = document.getElementById("conv-list");
+      const label  = document.getElementById("section-label");
 
-      let filtered = allConversations.filter(c => {
+      const filtered = allConversations.filter(c => {
         const nameMatch  = (c.customerName || "").toLowerCase().includes(search);
         const phoneMatch = c.phone.includes(search);
-        const statusMatch = !filter || c.status === filter;
-        return (nameMatch || phoneMatch) && statusMatch;
+        return (nameMatch || phoneMatch) && (!filter || c.status === filter);
       });
 
-      label.textContent = filtered.length === 1
-        ? "1 conversación"
-        : `${filtered.length} conversaciones`;
+      label.textContent = filtered.length === 1 ? "1 conversación" : `${filtered.length} conversaciones`;
 
       if (filtered.length === 0) {
-        list.innerHTML = `
-          <div class="empty-state">
-            <div class="empty-icon">💬</div>
-            <p>No hay conversaciones${search ? " que coincidan con la búsqueda" : " activas en este momento"}.</p>
-          </div>`;
+        list.innerHTML = `<div class="empty-state">
+          <div class="empty-icon">💬</div>
+          <p>No hay conversaciones${search ? " que coincidan con la búsqueda" : " activas en este momento"}.</p>
+        </div>`;
         return;
       }
 
       list.innerHTML = filtered.map(c => {
-        const name    = c.customerName || "Cliente desconocido";
-        const badge   = c.status === "completed"
+        const name  = c.customerName || "Cliente desconocido";
+        const badge = c.status === "completed"
           ? '<span class="badge badge-completed">Completada</span>'
           : '<span class="badge badge-active">Activa</span>';
-        return `
-          <div class="conv-card" onclick="openModal('${c.phone}')">
-            <div class="avatar">${initials(c.customerName)}</div>
-            <div class="conv-info">
-              <div class="conv-name">${escHtml(name)}</div>
-              <div class="conv-phone">${formatPhone(c.phone)}</div>
-              <div class="conv-preview">💬 ${escHtml(truncate(c.lastUserMessage, 70))}</div>
-            </div>
-            <div class="conv-meta">
-              <span class="conv-time">${relativeTime(c.lastActivity)}</span>
-              ${badge}
-              <span class="turns-count">${c.turns} turno${c.turns !== 1 ? "s" : ""}</span>
-            </div>
-          </div>`;
+        return `<div class="conv-card" onclick="openModal('${c.phone}')">
+          <div class="avatar">${initials(c.customerName)}</div>
+          <div class="conv-info">
+            <div class="conv-name">${escHtml(name)}</div>
+            <div class="conv-phone">${formatPhone(c.phone)}</div>
+            <div class="conv-preview">💬 ${escHtml(truncate(c.lastUserMessage, 70))}</div>
+          </div>
+          <div class="conv-meta">
+            <span class="conv-time">${relativeTime(c.lastActivity)}</span>
+            ${badge}
+            <span class="turns-count">${c.turns} turno${c.turns !== 1 ? "s" : ""}</span>
+          </div>
+        </div>`;
       }).join("");
-    }
-
-    function escHtml(str) {
-      return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     }
 
     async function fetchData() {
@@ -586,12 +692,12 @@
 
         const active    = allConversations.filter(c => c.status === "active").length;
         const completed = allConversations.filter(c => c.status === "completed").length;
-
         document.getElementById("stat-total").textContent     = data.total;
         document.getElementById("stat-active").textContent    = active;
         document.getElementById("stat-completed").textContent = completed;
 
         renderList();
+        if (activePhone) refreshModalMessages();
 
         const now = new Date();
         document.getElementById("last-refresh").textContent =
@@ -605,31 +711,81 @@
       const conv = allConversations.find(c => c.phone === phone);
       if (!conv) return;
 
+      activePhone = phone;
       document.getElementById("modal-name").textContent  = conv.customerName || "Cliente desconocido";
       document.getElementById("modal-phone").textContent = formatPhone(conv.phone) +
         (conv.status === "completed" ? "  ✓ Completada" : "  • Activa");
 
-      const msgs = conv.messages || [];
-      document.getElementById("modal-messages").innerHTML = msgs.length === 0
-        ? "<p style='text-align:center;color:#999;padding:20px'>Sin mensajes</p>"
-        : msgs.map(m => `
-            <div class="msg-bubble ${m.role}">
-              <div class="msg-role">${m.role === "user" ? "Cliente" : "Bot"}</div>
-              ${escHtml(m.content)}
-            </div>`).join("");
-
-      const msgBox = document.getElementById("modal-messages");
+      document.getElementById("reply-input").value = "";
       document.getElementById("modal-backdrop").classList.add("open");
-      setTimeout(() => { msgBox.scrollTop = msgBox.scrollHeight; }, 50);
+      refreshModalMessages();
+      setTimeout(() => {
+        document.getElementById("modal-messages").scrollTop = document.getElementById("modal-messages").scrollHeight;
+        document.getElementById("reply-input").focus();
+      }, 60);
     }
 
     function closeModal(event) {
       if (event && event.target !== document.getElementById("modal-backdrop")) return;
       document.getElementById("modal-backdrop").classList.remove("open");
+      activePhone = null;
     }
 
+    async function sendReply() {
+      if (!activePhone) return;
+      const input = document.getElementById("reply-input");
+      const btn   = document.getElementById("reply-send-btn");
+      const text  = input.value.trim();
+      if (!text) return;
+
+      input.disabled = true;
+      btn.disabled   = true;
+      btn.innerHTML  = "⏳";
+
+      try {
+        const res = await fetch("/api/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: activePhone, message: text }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Error desconocido");
+
+        input.value = "";
+        showToast("Mensaje enviado ✓", "ok");
+        await fetchData();
+      } catch (err) {
+        showToast("Error: " + err.message, "error");
+      } finally {
+        input.disabled = false;
+        btn.disabled   = false;
+        btn.innerHTML  = "&#10148;";
+        input.focus();
+      }
+    }
+
+    function showToast(msg, type) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.className = `toast ${type} show`;
+      clearTimeout(t._timer);
+      t._timer = setTimeout(() => { t.className = "toast"; }, 3000);
+    }
+
+    document.getElementById("reply-send-btn").addEventListener("click", sendReply);
+
+    document.getElementById("reply-input").addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendReply();
+      }
+    });
+
     document.addEventListener("keydown", e => {
-      if (e.key === "Escape") document.getElementById("modal-backdrop").classList.remove("open");
+      if (e.key === "Escape") {
+        document.getElementById("modal-backdrop").classList.remove("open");
+        activePhone = null;
+      }
     });
 
     document.getElementById("search").addEventListener("input",  renderList);

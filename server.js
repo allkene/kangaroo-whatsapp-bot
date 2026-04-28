@@ -316,11 +316,29 @@ app.get("/api/conversations", (req, res) => {
       firstMessageAt: session.firstMessageAt,
       turns: Math.floor(session.messages.length / 2),
       status: session.completed ? "completed" : "active",
-      messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: session.messages.map((m) => ({ role: m.role, content: m.content, manual: !!m.manual })),
     });
   }
   result.sort((a, b) => b.lastActivity - a.lastActivity);
   res.json({ total: result.length, conversations: result });
+});
+
+// ──────────────────────────────────────────────
+// API — POST /api/send  (respuesta manual del agente)
+// ──────────────────────────────────────────────
+app.post("/api/send", async (req, res) => {
+  const { phone, message } = req.body;
+  if (!phone || !message?.trim()) {
+    return res.status(400).json({ error: "Se requieren phone y message" });
+  }
+  try {
+    await sendWhatsAppMessage(phone, message.trim());
+    const history = getHistory(phone);
+    saveHistory(phone, [...history, { role: "assistant", content: message.trim(), manual: true }]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data ?? err.message });
+  }
 });
 
 // ──────────────────────────────────────────────
