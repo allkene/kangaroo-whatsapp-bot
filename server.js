@@ -293,6 +293,33 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// NOTIFICACIÓN AL AGENTE — cuando el bot cierra una solicitud
+// ──────────────────────────────────────────────
+async function notifyAgent(phone) {
+  try {
+    const { rows: [data] } = await pool.query(
+      `SELECT customer_name, address, last_user_message FROM conversations WHERE phone = $1`,
+      [phone]
+    );
+
+    const name    = data?.customer_name    || "Desconocido";
+    const address = data?.address          || "No proporcionada";
+    const lastMsg = data?.last_user_message || "—";
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const fecha = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+    const msg = `🦘 *Nueva solicitud Kangaroo*\n\n👤 Cliente: ${name}\n📱 Teléfono: +${phone}\n📍 Dirección: ${address}\n📝 Último mensaje: ${lastMsg}\n\n⏰ ${fecha}`;
+
+    await sendWhatsAppMessage("18094459230", msg);
+    console.log(`[Agente] Notificación enviada para ${phone}`);
+  } catch (err) {
+    console.error("[Agente] Error al notificar:", err.message);
+  }
+}
+
+// ──────────────────────────────────────────────
 // 3. LLAMAR A GROQ CON HISTORIAL DE CONVERSACIÓN
 // ──────────────────────────────────────────────
 async function askGroq(phone, userMessage) {
@@ -334,6 +361,7 @@ async function askGroq(phone, userMessage) {
     await appendMessage(phone, "assistant", assistantReply);
 
     if (assistantReply.includes("técnico de Kangaroo Multiservice te contactará pronto")) {
+      await notifyAgent(phone);
       setTimeout(() => resetSession(phone), 5 * 60 * 1000);
     }
 
