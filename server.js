@@ -360,7 +360,7 @@ async function askGroq(phone, userMessage) {
     const assistantReply = response.data.choices[0].message.content;
     await appendMessage(phone, "assistant", assistantReply);
 
-    if (assistantReply.includes("técnico de Kangaroo Multiservice te contactará pronto")) {
+    if (assistantReply.includes("te contactará pronto")) {
       await notifyAgent(phone);
       setTimeout(() => resetSession(phone), 5 * 60 * 1000);
     }
