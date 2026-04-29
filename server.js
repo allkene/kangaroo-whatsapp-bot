@@ -312,7 +312,7 @@ async function notifyAgent(phone) {
 
     const msg = `🦘 *Nueva solicitud Kangaroo*\n\n👤 Cliente: ${name}\n📱 Teléfono: +${phone}\n📍 Dirección: ${address}\n📝 Último mensaje: ${lastMsg}\n\n⏰ ${fecha}`;
 
-    await sendWhatsAppMessage("18094459230", msg);
+    await sendWhatsAppMessage("18098521863", msg);
     console.log(`[Agente] Notificación enviada para ${phone}`);
   } catch (err) {
     console.error("[Agente] Error al notificar:", err.message);
