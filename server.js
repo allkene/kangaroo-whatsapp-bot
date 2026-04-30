@@ -13,6 +13,7 @@ const {
   PHONE_NUMBER_ID,
   VERIFY_TOKEN,
   GROQ_API_KEY,
+  GOOGLE_MAPS_KEY,
   PORT = 3000,
 } = process.env;
 
@@ -267,13 +268,29 @@ app.post("/webhook", async (req, res) => {
     } else if (message.type === "location") {
       const { latitude, longitude } = message.location;
       console.log(`[Ubicación] De ${from}: ${latitude}, ${longitude}`);
+
+      let resolvedAddress = `${latitude}, ${longitude}`;
+      try {
+        const geoRes = await axios.get(
+          "https://maps.googleapis.com/maps/api/geocode/json",
+          { params: { latlng: `${latitude},${longitude}`, key: GOOGLE_MAPS_KEY, language: "es" } }
+        );
+        const formatted = geoRes.data.results?.[0]?.formatted_address;
+        if (formatted) {
+          resolvedAddress = formatted;
+          console.log(`[Geocoding] Dirección: ${resolvedAddress}`);
+        }
+      } catch (err) {
+        console.error("[Geocoding] Error al obtener dirección, usando coordenadas:", err.message);
+      }
+
       await pool.query(
         `INSERT INTO conversations (phone, address)
          VALUES ($1, $2)
          ON CONFLICT (phone) DO UPDATE SET address = EXCLUDED.address`,
-        [from, `${latitude}, ${longitude}`]
+        [from, resolvedAddress]
       );
-      userText = `Mi ubicación es: ${latitude}, ${longitude}`;
+      userText = `Mi ubicación es: ${resolvedAddress}`;
 
     } else if (message.type === "image") {
       await sendWhatsAppMessage(from, "Recibí tu imagen, pero por ahora solo puedo procesar texto, audio y ubicaciones. Por favor descríbeme tu problema en texto.");
