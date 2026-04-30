@@ -271,11 +271,14 @@ app.post("/webhook", async (req, res) => {
 
       let resolvedAddress = `${latitude}, ${longitude}`;
       try {
+        console.log("[Geocoding] Intentando geocodificar:", latitude, longitude, "Key disponible:", !!process.env.GOOGLE_MAPS_KEY);
         const geoRes = await axios.get(
           "https://maps.googleapis.com/maps/api/geocode/json",
           { params: { latlng: `${latitude},${longitude}`, key: GOOGLE_MAPS_KEY, language: "es" } }
         );
-        const formatted = geoRes.data.results?.[0]?.formatted_address;
+        const geoData = geoRes.data;
+        console.log("[Geocoding] Resultado:", JSON.stringify(geoData?.results?.[0]?.formatted_address));
+        const formatted = geoData.results?.[0]?.formatted_address;
         if (formatted) {
           resolvedAddress = formatted;
           console.log(`[Geocoding] Dirección: ${resolvedAddress}`);
