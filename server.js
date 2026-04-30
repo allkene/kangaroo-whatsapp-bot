@@ -14,6 +14,7 @@ const {
   VERIFY_TOKEN,
   GROQ_API_KEY,
   GOOGLE_MAPS_KEY,
+  PAGE_ACCESS_TOKEN,
   PORT = 3000,
 } = process.env;
 
@@ -310,6 +311,32 @@ app.post("/webhook", async (req, res) => {
   } catch (err) {
     console.error("[Error POST /webhook]", err.response?.data || err.message);
   }
+
+  // ── Messenger ──────────────────────────────────
+  try {
+    const body = req.body;
+    if (body.object !== "page") return;
+
+    for (const entry of body.entry ?? []) {
+      const messaging = entry.messaging?.[0];
+      if (!messaging?.message || messaging.message.is_echo) continue;
+
+      const senderId = messaging.sender.id;
+      const userText = messaging.message.text;
+
+      console.log(`[Messenger] De ${senderId}: "${userText}"`);
+
+      if (!userText) {
+        await sendMessengerMessage(senderId, "Solo puedo procesar mensajes de texto. Por favor escríbeme tu consulta.");
+        continue;
+      }
+
+      const reply = await askGroq(senderId, userText);
+      await sendMessengerMessage(senderId, reply);
+    }
+  } catch (err) {
+    console.error("[Error Messenger /webhook]", err.response?.data || err.message);
+  }
 });
 
 // ──────────────────────────────────────────────
@@ -420,6 +447,29 @@ async function sendWhatsAppMessage(to, text) {
   } catch (err) {
     const detail = err.response?.data?.error ?? err.message;
     console.error(`[WhatsApp] ERROR enviando a ${to}:`, JSON.stringify(detail, null, 2));
+    throw err;
+  }
+}
+
+// ──────────────────────────────────────────────
+// ENVIAR MENSAJE POR FACEBOOK MESSENGER
+// ──────────────────────────────────────────────
+async function sendMessengerMessage(recipientId, text) {
+  try {
+    const { data } = await axios.post(
+      "https://graph.facebook.com/v21.0/me/messages",
+      { recipient: { id: recipientId }, message: { text } },
+      {
+        headers: {
+          Authorization: `Bearer ${PAGE_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(`[Messenger] Enviado a ${recipientId} | message_id: ${data.message_id}`);
+  } catch (err) {
+    const detail = err.response?.data?.error ?? err.message;
+    console.error(`[Messenger] ERROR enviando a ${recipientId}:`, JSON.stringify(detail, null, 2));
     throw err;
   }
 }
