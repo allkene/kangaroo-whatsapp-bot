@@ -1,20 +1,25 @@
 require("dotenv").config();
 const express = require("express");
-const axios = require("axios");
-const path = require("path");
+const axios   = require("axios");
+const path    = require("path");
+const crypto  = require("crypto");
+const fs      = require("fs");
 const { pool, initDb } = require("./db");
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const {
   META_ACCESS_TOKEN,
   PHONE_NUMBER_ID,
   VERIFY_TOKEN,
+  META_APP_SECRET,
   GROQ_API_KEY,
   GOOGLE_MAPS_KEY,
   PAGE_ACCESS_TOKEN,
+  ADMIN_API_KEY,
+  AGENT_PHONE_NUMBER,
   PORT = 3000,
 } = process.env;
 
@@ -169,6 +174,30 @@ REGLAS:
 - Si el cliente pregunta por algo fuera de los servicios ofrecidos, explica amablemente que no puedes ayudar con eso`;
 
 // ──────────────────────────────────────────────
+// SEGURIDAD — firma Meta y API key de admin
+// ──────────────────────────────────────────────
+function verifyMetaSignature(req) {
+  if (!META_APP_SECRET) return true;
+  const sig = req.get("x-hub-signature-256");
+  if (!sig || !req.rawBody) return false;
+  const expected = "sha256=" + crypto
+    .createHmac("sha256", META_APP_SECRET)
+    .update(req.rawBody)
+    .digest("hex");
+  try {
+    return sig.length === expected.length &&
+      crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  } catch { return false; }
+}
+
+function requireAdminKey(req, res, next) {
+  const auth = req.headers["authorization"] || "";
+  const key  = req.headers["x-api-key"] || auth.replace(/^Bearer\s+/i, "");
+  if (ADMIN_API_KEY && key === ADMIN_API_KEY) return next();
+  res.sendStatus(401);
+}
+
+// ──────────────────────────────────────────────
 // 1. WEBHOOK VERIFICATION (GET)
 // ──────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
@@ -224,6 +253,7 @@ async function transcribeAudio(mediaId) {
 // 2. RECIBIR MENSAJES ENTRANTES (POST)
 // ──────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
+  if (!verifyMetaSignature(req)) return res.sendStatus(403);
   res.sendStatus(200);
 
   try {
@@ -359,7 +389,7 @@ async function notifyAgent(phone) {
 
     const msg = `🦘 *Nueva solicitud Kangaroo*\n\n👤 Cliente: ${name}\n📱 Teléfono: +${phone}\n📍 Dirección: ${address}\n📝 Último mensaje: ${lastMsg}\n\n⏰ ${fecha}`;
 
-    await sendWhatsAppMessage("18098521863", msg);
+    await sendWhatsAppMessage(AGENT_PHONE_NUMBER || "18098521863", msg);
     console.log(`[Agente] Notificación enviada para ${phone}`);
   } catch (err) {
     console.error("[Agente] Error al notificar:", err.message);
@@ -496,23 +526,9 @@ async function markAsRead(messageId) {
   ).catch(() => {});
 }
 
-// ──────────────────────────────────────────────
-// TEST ENDPOINT — GET /test?to=NUMERO
-// ──────────────────────────────────────────────
-app.get("/test", async (req, res) => {
-  const to = req.query.to;
-  if (!to) return res.status(400).json({ error: "Falta el parámetro ?to=NUMERO" });
-
-  try {
-    await sendWhatsAppMessage(to, "Prueba del bot ✓ — Asistente de Kangaroo Multiservice funcionando.");
-    res.json({ ok: true, to });
-  } catch (err) {
-    res.status(500).json({ error: err.response?.data ?? err.message });
-  }
-});
 
 // DEBUG — ver sesiones activas: GET /sessions
-app.get("/sessions", async (req, res) => {
+app.get("/sessions", requireAdminKey, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT c.phone, COUNT(m.id) AS turns, c.last_activity
@@ -535,38 +551,19 @@ app.get("/sessions", async (req, res) => {
   }
 });
 
-// ──────────────────────────────────────────────
-// FIX-DATA — GET /fix-data  (corrección puntual de datos)
-// ──────────────────────────────────────────────
-app.get("/fix-data", async (req, res) => {
-  try {
-    const result = await pool.query(
-      `UPDATE conversations
-       SET customer_name = 'Adonis López',
-           address       = 'Calle Primera Ensanche La Hoz número 69, La Romana'
-       WHERE phone = '18098521863'
-       RETURNING phone, customer_name, address`
-    );
-    if (result.rowCount === 0) {
-      return res.json({ ok: false, message: "No se encontró el teléfono 18098521863" });
-    }
-    res.json({ ok: true, updated: result.rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ──────────────────────────────────────────────
 // DASHBOARD — GET /dashboard
 // ──────────────────────────────────────────────
 app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+  const html = fs.readFileSync(path.join(__dirname, "public", "dashboard.html"), "utf8");
+  res.send(html.replace("</head>", `<script>window.__K=${JSON.stringify(ADMIN_API_KEY || "")};</script></head>`));
 });
 
 // ──────────────────────────────────────────────
 // API — GET /api/conversations
 // ──────────────────────────────────────────────
-app.get("/api/conversations", async (req, res) => {
+app.get("/api/conversations", requireAdminKey, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -611,13 +608,14 @@ app.get("/api/conversations", async (req, res) => {
 // CLIENTES — GET /clientes
 // ──────────────────────────────────────────────
 app.get("/clientes", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "clientes.html"));
+  const html = fs.readFileSync(path.join(__dirname, "public", "clientes.html"), "utf8");
+  res.send(html.replace("</head>", `<script>window.__K=${JSON.stringify(ADMIN_API_KEY || "")};</script></head>`));
 });
 
 // ──────────────────────────────────────────────
 // API — GET /api/clientes
 // ──────────────────────────────────────────────
-app.get("/api/clientes", async (req, res) => {
+app.get("/api/clientes", requireAdminKey, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT
@@ -650,7 +648,7 @@ app.get("/api/clientes", async (req, res) => {
 // ──────────────────────────────────────────────
 // API — POST /api/send  (respuesta manual del agente)
 // ──────────────────────────────────────────────
-app.post("/api/send", async (req, res) => {
+app.post("/api/send", requireAdminKey, async (req, res) => {
   const { phone, message } = req.body;
   if (!phone || !message?.trim()) {
     return res.status(400).json({ error: "Se requieren phone y message" });

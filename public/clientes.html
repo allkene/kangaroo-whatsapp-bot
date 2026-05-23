@@ -354,7 +354,9 @@
 
     async function fetchClientes() {
       try {
-        const res  = await fetch("/api/clientes");
+        const res  = await fetch("/api/clientes", {
+          headers: { "X-API-Key": window.__K || "" }
+        });
         const data = await res.json();
         allClientes = data.clientes || [];
 

@@ -703,7 +703,9 @@
 
     async function fetchData() {
       try {
-        const res  = await fetch("/api/conversations");
+        const res  = await fetch("/api/conversations", {
+          headers: { "X-API-Key": window.__K || "" }
+        });
         const data = await res.json();
         allConversations = data.conversations || [];
 
@@ -762,7 +764,7 @@
       try {
         const res = await fetch("/api/send", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-API-Key": window.__K || "" },
           body: JSON.stringify({ phone: activePhone, message: text }),
         });
         const data = await res.json();
