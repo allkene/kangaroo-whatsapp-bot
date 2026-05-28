@@ -375,7 +375,11 @@ const AGENT_NUMBER = AGENT_PHONE_NUMBER || "18098521863";
 // NOTIFICACIÓN AL AGENTE — mensaje nuevo de cliente
 // ──────────────────────────────────────────────
 async function notifyAgentNewMessage(phone, userText) {
-  if (phone === AGENT_NUMBER) return;
+  if (phone === AGENT_NUMBER) {
+    console.log("[Agente] Mensaje del propio agente, omitiendo notificación.");
+    return;
+  }
+  console.log(`[Agente] Enviando notificación de mensaje nuevo a ${AGENT_NUMBER} (cliente: ${phone})`);
   try {
     const { rows: [data] } = await pool.query(
       `SELECT customer_name FROM conversations WHERE phone = $1`,
@@ -384,9 +388,9 @@ async function notifyAgentNewMessage(phone, userText) {
     const name = data?.customer_name || "Desconocido";
     const msg = `📨 *Nuevo mensaje de cliente*\n\n👤 ${name}\n📱 +${phone}\n\n💬 "${userText}"`;
     await sendWhatsAppMessage(AGENT_NUMBER, msg);
-    console.log(`[Agente] Notificación de mensaje nuevo para ${phone}`);
+    console.log(`[Agente] Notificación de mensaje nuevo enviada para ${phone}`);
   } catch (err) {
-    console.error("[Agente] Error al notificar mensaje nuevo:", err.message);
+    console.error("[Agente] Error al notificar mensaje nuevo:", err.response?.data ?? err.message);
   }
 }
 
@@ -394,6 +398,7 @@ async function notifyAgentNewMessage(phone, userText) {
 // NOTIFICACIÓN AL AGENTE — solicitud cerrada con resumen completo
 // ──────────────────────────────────────────────
 async function notifyAgent(phone, closingReply) {
+  console.log(`[Agente] Enviando notificación de cierre a ${AGENT_NUMBER} (cliente: ${phone})`);
   try {
     const { rows: [data] } = await pool.query(
       `SELECT customer_name, address FROM conversations WHERE phone = $1`,
@@ -412,7 +417,7 @@ async function notifyAgent(phone, closingReply) {
     await sendWhatsAppMessage(AGENT_NUMBER, msg);
     console.log(`[Agente] Notificación de cierre enviada para ${phone}`);
   } catch (err) {
-    console.error("[Agente] Error al notificar cierre:", err.message);
+    console.error("[Agente] Error al notificar cierre:", err.response?.data ?? err.message);
   }
 }
 
@@ -433,7 +438,9 @@ async function askGroq(phone, userMessage) {
     : SYSTEM_PROMPT;
 
   await appendMessage(phone, "user", userMessage);
-  notifyAgentNewMessage(phone, userMessage).catch(() => {});
+  notifyAgentNewMessage(phone, userMessage).catch((err) => {
+    console.error("[Agente] notifyAgentNewMessage escapó try/catch:", err.message);
+  });
 
   try {
     const response = await axios.post(
