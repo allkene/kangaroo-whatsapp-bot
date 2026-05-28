@@ -70,7 +70,9 @@ function extractCustomerName(messages) {
   return null;
 }
 
-// Returns messages for the current active session (respects 24h TTL for bot context)
+// Returns messages for the current active session (24h TTL).
+// If the session expired, falls back to the last 20 messages of the previous
+// session (up to 7 days) so the bot can retake context when the client returns.
 async function getHistory(phone) {
   const { rows } = await pool.query(
     `SELECT m.role, m.content, m.manual
@@ -81,7 +83,19 @@ async function getHistory(phone) {
      ORDER BY m.created_at`,
     [phone]
   );
-  return rows;
+  if (rows.length > 0) return rows;
+
+  // Returning client after session expiry — load previous context
+  const { rows: prev } = await pool.query(
+    `SELECT role, content, manual
+     FROM messages
+     WHERE phone = $1
+       AND created_at > NOW() - INTERVAL '7 days'
+     ORDER BY created_at DESC
+     LIMIT 20`,
+    [phone]
+  );
+  return prev.reverse();
 }
 
 // Appends one message and updates conversation metadata.
@@ -467,7 +481,9 @@ async function askGroq(phone, userMessage) {
 
     if (assistantReply.includes("te contactará pronto")) {
       await notifyAgent(phone, assistantReply);
-      setTimeout(() => resetSession(phone), 5 * 60 * 1000);
+      // No reseteamos la sesión aquí: el auto-reset de 24h en appendMessage
+      // la cierra naturalmente y evita que el bot olvide el contexto si el
+      // cliente vuelve a escribir el mismo día.
     }
 
     return assistantReply;
