@@ -395,12 +395,40 @@ async function notifyAgentNewMessage(phone, userText) {
   }
   console.log(`[Agente] Enviando notificación de mensaje nuevo a ${AGENT_NUMBER} (cliente: ${phone})`);
   try {
-    const { rows: [data] } = await pool.query(
+    const { rows: [conv] } = await pool.query(
       `SELECT customer_name FROM conversations WHERE phone = $1`,
       [phone]
     );
-    const name = data?.customer_name || "Desconocido";
-    const msg = `📨 *Nuevo mensaje de cliente*\n\n👤 ${name}\n📱 +${phone}\n\n💬 "${userText}"`;
+    const name = conv?.customer_name || "Desconocido";
+
+    const { rows: recent } = await pool.query(
+      `SELECT role, content
+       FROM messages
+       WHERE phone = $1
+       ORDER BY created_at DESC
+       LIMIT 3`,
+      [phone]
+    );
+    const historial = recent.reverse().map((m) => {
+      const prefix = m.role === "user" ? "👤" : "🤖";
+      return `${prefix} ${m.content}`;
+    }).join("\n");
+
+    const msg = [
+      `📨 *Nuevo mensaje de cliente*`,
+      ``,
+      `👤 ${name}`,
+      `📱 +${phone}`,
+      ``,
+      `💬 *Mensaje:*`,
+      `"${userText}"`,
+      ``,
+      `🕐 *Últimos mensajes:*`,
+      historial,
+      ``,
+      `🔗 https://kangaroo-whatsapp-bot-production.up.railway.app/dashboard`,
+    ].join("\n");
+
     await sendWhatsAppMessage(AGENT_NUMBER, msg);
     console.log(`[Agente] Notificación de mensaje nuevo enviada para ${phone}`);
   } catch (err) {
@@ -426,7 +454,19 @@ async function notifyAgent(phone, closingReply) {
     const pad = (n) => String(n).padStart(2, "0");
     const fecha = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
-    const msg = `✅ *Solicitud cerrada — Kangaroo*\n\n👤 Cliente: ${name}\n📱 Teléfono: +${phone}\n📍 Dirección: ${address}\n\n📋 Resumen del bot:\n${closingReply}\n\n⏰ ${fecha}`;
+    const msg = [
+      `✅ *Solicitud cerrada — Kangaroo*`,
+      ``,
+      `👤 Cliente: ${name}`,
+      `📱 Teléfono: +${phone}`,
+      `📍 Dirección: ${address}`,
+      `⏰ ${fecha}`,
+      ``,
+      `📋 *Resumen:*`,
+      closingReply,
+      ``,
+      `🔗 https://kangaroo-whatsapp-bot-production.up.railway.app/dashboard`,
+    ].join("\n");
 
     await sendWhatsAppMessage(AGENT_NUMBER, msg);
     console.log(`[Agente] Notificación de cierre enviada para ${phone}`);
