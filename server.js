@@ -369,30 +369,50 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+const AGENT_NUMBER = AGENT_PHONE_NUMBER || "18098521863";
+
 // ──────────────────────────────────────────────
-// NOTIFICACIÓN AL AGENTE — cuando el bot cierra una solicitud
+// NOTIFICACIÓN AL AGENTE — mensaje nuevo de cliente
 // ──────────────────────────────────────────────
-async function notifyAgent(phone) {
+async function notifyAgentNewMessage(phone, userText) {
+  if (phone === AGENT_NUMBER) return;
   try {
     const { rows: [data] } = await pool.query(
-      `SELECT customer_name, address, last_user_message FROM conversations WHERE phone = $1`,
+      `SELECT customer_name FROM conversations WHERE phone = $1`,
+      [phone]
+    );
+    const name = data?.customer_name || "Desconocido";
+    const msg = `📨 *Nuevo mensaje de cliente*\n\n👤 ${name}\n📱 +${phone}\n\n💬 "${userText}"`;
+    await sendWhatsAppMessage(AGENT_NUMBER, msg);
+    console.log(`[Agente] Notificación de mensaje nuevo para ${phone}`);
+  } catch (err) {
+    console.error("[Agente] Error al notificar mensaje nuevo:", err.message);
+  }
+}
+
+// ──────────────────────────────────────────────
+// NOTIFICACIÓN AL AGENTE — solicitud cerrada con resumen completo
+// ──────────────────────────────────────────────
+async function notifyAgent(phone, closingReply) {
+  try {
+    const { rows: [data] } = await pool.query(
+      `SELECT customer_name, address FROM conversations WHERE phone = $1`,
       [phone]
     );
 
-    const name    = data?.customer_name    || "Desconocido";
-    const address = data?.address          || "No proporcionada";
-    const lastMsg = data?.last_user_message || "—";
+    const name    = data?.customer_name || "Desconocido";
+    const address = data?.address       || "No proporcionada";
 
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
     const fecha = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
-    const msg = `🦘 *Nueva solicitud Kangaroo*\n\n👤 Cliente: ${name}\n📱 Teléfono: +${phone}\n📍 Dirección: ${address}\n📝 Último mensaje: ${lastMsg}\n\n⏰ ${fecha}`;
+    const msg = `✅ *Solicitud cerrada — Kangaroo*\n\n👤 Cliente: ${name}\n📱 Teléfono: +${phone}\n📍 Dirección: ${address}\n\n📋 Resumen del bot:\n${closingReply}\n\n⏰ ${fecha}`;
 
-    await sendWhatsAppMessage(AGENT_PHONE_NUMBER || "18098521863", msg);
-    console.log(`[Agente] Notificación enviada para ${phone}`);
+    await sendWhatsAppMessage(AGENT_NUMBER, msg);
+    console.log(`[Agente] Notificación de cierre enviada para ${phone}`);
   } catch (err) {
-    console.error("[Agente] Error al notificar:", err.message);
+    console.error("[Agente] Error al notificar cierre:", err.message);
   }
 }
 
@@ -413,6 +433,7 @@ async function askGroq(phone, userMessage) {
     : SYSTEM_PROMPT;
 
   await appendMessage(phone, "user", userMessage);
+  notifyAgentNewMessage(phone, userMessage).catch(() => {});
 
   try {
     const response = await axios.post(
@@ -438,7 +459,7 @@ async function askGroq(phone, userMessage) {
     await appendMessage(phone, "assistant", assistantReply);
 
     if (assistantReply.includes("te contactará pronto")) {
-      await notifyAgent(phone);
+      await notifyAgent(phone, assistantReply);
       setTimeout(() => resetSession(phone), 5 * 60 * 1000);
     }
 
